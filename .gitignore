@@ -1,0 +1,48 @@
+# Terraform
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.*
+infra/.terraform.lock.hcl
+infra/terraform.tfvars
+infra/*.tfplan
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# dbt
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+dbt/profiles.yml
+
+# Airflow
+airflow/logs/
+airflow/plugins/
+airflow/.env
+
+# MLflow
+mlruns/
+mlartifacts/
+
+# Data (never commit raw data)
+data/
+*.csv
+!dbt/seeds/**/*.csv
+
+# Power BI (binary, large — document instead of committing)
+*.pbix
+
+# Secrets
+*.env
+.env
+secrets.json
+**/local.settings.json
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
