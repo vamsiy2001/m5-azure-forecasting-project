@@ -2,7 +2,7 @@
 infra/.terraform/
 infra/*.tfstate
 infra/*.tfstate.*
-infra/.terraform.lock.hcl
+# infra/.terraform.lock.hcl
 infra/terraform.tfvars
 infra/*.tfplan
 
