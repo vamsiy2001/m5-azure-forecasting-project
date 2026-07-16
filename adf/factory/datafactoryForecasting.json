@@ -1,0 +1,15 @@
+{
+	"name": "datafactoryForecasting",
+	"properties": {
+		"trustModeClaimForMi": {
+			"value": "Disabled",
+			"editable": true
+		}
+	},
+	"location": "eastus2",
+	"identity": {
+		"type": "SystemAssigned",
+		"principalId": "f442eaa3-9f75-445c-bc6f-21d209dce0cf",
+		"tenantId": "f4827f40-0cfc-4420-9184-5129b5a25346"
+	}
+}
