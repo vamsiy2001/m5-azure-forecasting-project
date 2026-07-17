@@ -165,3 +165,22 @@ m5-azure-forecasting/
 - **Governance:** Microsoft Purview included from the start, scoped to scanning + lineage only to keep cost near zero.
 - **Spark engines:** both Databricks (silver transform, native MLflow) and Synapse Spark pool (gold aggregation), deliberately split so the project can speak to when you'd reach for each.
 - **Fabric:** included as an added serving/integration layer via OneLake Mirroring + Direct Lake Power BI, on top of the classic ADF/Synapse/Databricks build rather than replacing it, running on Fabric's separate free 60-day F64 trial.
+
+## 10. Amendment (post-Stage 4): Spark compute consolidated onto Fabric
+
+**Original plan:** Databricks (silver transform, native MLflow) + Synapse Spark pool (gold aggregation), run as two deliberately separate engines.
+
+**What happened:** Azure Databricks cluster creation failed with a compute-quota error. Investigation via Azure Quotas (Portal -> Quotas -> Compute) showed the Azure for Students subscription is capped at a hard ceiling of ~4 vCPUs total, and this ceiling turned out to be **subscription-wide, not per-region** -- recreating the Databricks workspace in a second region (North Central US, after East US 2) produced identical quota numbers, confirming it. A self-service quota increase request was submitted and declined.
+
+**Why this isn't just a Databricks problem:** Synapse Spark pools are also backed by Azure VMs drawing from the same compute quota family, so the original two-engine design was very likely to hit the identical wall at Stage 7, just later.
+
+**Decision:** consolidate Spark transform work (both the silver-layer transform and the gold-layer aggregation) onto **Microsoft Fabric** notebooks against a Fabric Lakehouse, instead of Databricks clusters and a Synapse Spark pool. Fabric compute draws from Fabric Capacity Units, a completely separate allocation system from classic Azure Compute VM quota, which sidesteps this specific constraint rather than working around it.
+
+**What this changes:**
+- The Azure Databricks workspace stays in the project, fully and correctly configured (managed identity, RBAC role assignments, networking) -- it's real, demonstrable infrastructure work, just not used for actual compute due to the account-level quota ceiling. Documented here rather than quietly deleted.
+- dbt's target moves from "dbt-core on Databricks SQL" to dbt against Fabric's SQL endpoint/Warehouse (`dbt-fabric` adapter).
+- The Synapse Spark pool is dropped from the design; Synapse's role narrows to serverless SQL only, serving the classic-stack Power BI path.
+- Fabric's role expands from "added at the end as a serving layer" (OneLake Mirroring + Direct Lake Power BI) to "core compute used throughout the transform and modeling stages," in addition to its original serving-layer role.
+- Airflow orchestration is unaffected -- Fabric exposes a REST API, so the `transform_silver_databricks` and `aggregate_gold` DAG tasks get retargeted at Fabric instead of losing external triggering entirely (unlike the Databricks Community Edition alternative, which was considered and rejected specifically because it cannot be triggered externally).
+
+This is a real infrastructure constraint, not a design do-over for its own sake -- worth stating plainly in any write-up of this project rather than glossed over.
