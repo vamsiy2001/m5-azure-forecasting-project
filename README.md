@@ -1,10 +1,16 @@
-# M5 Demand Forecasting — Azure End-to-End Data Engineering Project
+# M5 demand forecasting - Azure data engineering pipeline
 
-Hierarchical demand forecasting on Walmart's real M5 dataset (30,490 item-store series, 1,913+ days of daily sales), built as a full lakehouse pipeline across the classic Azure data stack plus a Microsoft Fabric serving layer.
+Hierarchical demand forecasting groundwork on Walmart's real M5 dataset (30,490 item-store series, 1,941 days of daily sales), built as a working ingest-to-gold pipeline on Azure. The transform layer ended up running locally after three separate Azure subscription-tier walls ruled out the cloud compute options one by one.
 
-Full design rationale, cost strategy, and decision log live in [`docs/project_spec.md`](docs/project_spec.md). This README covers what's in the repo and how to run it.
+Full build log, the original architecture plan, and every decision (including the parts that didn't work) live in [`docs/project_spec.md`](docs/project_spec.md). This file covers what's actually running and how to run it yourself.
 
-## Architecture
+## What this actually is
+
+I set out to build a full lakehouse pipeline across most of the modern Azure data stack: ADF, Databricks, Synapse, Fabric, dbt, Purview, Azure ML, Power BI. Three of those hit real, non-negotiable limits on an Azure for Students subscription: a subscription-wide compute quota (Databricks), an account-type gate on Fabric that has nothing to do with quota, and a fraud-prevention block on provisioning new Azure SQL servers, which killed Synapse's serverless SQL pool even though serverless is supposed to need no provisioned compute at all. Each one is documented in detail in the spec, because working around a real constraint and saying so is a better engineering story than a build with no friction in it.
+
+What actually ships in v1: ADF handles ingestion, Airflow orchestrates, local PySpark does the transform work against the same ADLS Gen2 lake a cloud engine would have used, and Tableau Public serves the result. dbt, Purview, and the actual forecasting model (the point of a project called "demand forecasting") are explicit next steps, not abandoned ideas -- see the spec's final section for the honest state of each.
+
+## Architecture (what's running today)
 
 ```mermaid
 flowchart LR
@@ -12,85 +18,60 @@ flowchart LR
         K[Kaggle M5 CSVs]
     end
     subgraph Ingest
-        ADF[Azure Data Factory\nbronze ingestion pipeline]
+        ADF[Azure Data Factory\nbronze ingestion, git-integrated]
     end
     subgraph Orchestrate
-        AF[Apache Airflow\nDockerized]
+        AF[Apache Airflow\nDockerized, self-hosted]
     end
-    subgraph Lake["ADLS Gen2 - Medallion"]
-        B[(Bronze)]
-        S[(Silver)]
-        G[(Gold)]
+    subgraph Lake["ADLS Gen2 - medallion"]
+        B[(Bronze - raw CSV)]
+        S[(Silver - reshaped, joined)]
+        G[(Gold - daily aggregates)]
     end
-    subgraph Compute
-        DBX[Databricks / PySpark]
-        SPK[Synapse Spark pool]
-        DBT[dbt-core]
-    end
-    subgraph Gov
-        PUR[Microsoft Purview]
-    end
-    subgraph ML
-        AML[Azure ML AutoML]
-        MLF[MLflow]
-        LGB[LightGBM]
+    subgraph Transform
+        PS[Local PySpark\nabfss + Key Vault auth]
     end
     subgraph Serve
-        SYN[Synapse Serverless SQL]
-        PBI1[Power BI Import]
-    end
-    subgraph FabricLayer["Microsoft Fabric"]
-        ONE[OneLake Mirroring]
-        FWH[Fabric Warehouse]
-        PBI2[Power BI Direct Lake]
+        TB[Tableau Public\non local gold export]
     end
 
     K --> ADF --> B
-    AF -.orchestrates.-> DBX
-    AF -.orchestrates.-> SPK
-    AF -.orchestrates.-> DBT
-    AF -.orchestrates.-> LGB
-    B --> DBX --> S --> SPK --> G
-    S --> DBT --> G --> SYN --> PBI1
-    G --> ONE --> FWH --> PBI2
-    S --> AML --> MLF
-    S --> LGB --> MLF --> G
-    Lake -.scanned by.-> PUR
+    AF -.orchestrates.-> PS
+    B --> PS --> S --> PS --> G
+    G --> TB
 ```
 
 ## What's in the repo
 
-| Path | Contents |
-|---|---|
-| `infra/` | Terraform for every Azure resource: resource group, ADLS Gen2, ADF, Databricks workspace, Synapse workspace + Spark pool, Azure ML workspace, Key Vault, Purview account |
-| `adf/` | Linked service, dataset, and pipeline JSON for bronze ingestion |
-| `airflow/` | Dockerized Airflow, DAG orchestrating Databricks → Synapse Spark → dbt → training |
-| `notebooks/` | Databricks PySpark: bronze → silver (reshape, join, feature engineering) |
-| `synapse-spark/` | Synapse Spark notebook: silver → gold aggregation (separate engine, separate job) |
-| `dbt/` | dbt-core project: gold star schema, tests, docs |
-| `ml/` | AutoML config, LightGBM training with MLflow, WRMSSE evaluation |
-| `powerbi/` | DAX measures and report notes for both serving paths |
-| `fabric/` | OneLake Mirroring setup, Fabric Data Factory mapping notes |
-| `.github/workflows/` | CI/CD: lint/test, Terraform plan/apply, dbt test |
-| `docs/project_spec.md` | Full architecture spec and decision log |
+| Path | Contents | Status |
+|---|---|---|
+| `infra/` | Terraform: resource group, provider config | Partial -- storage account and Key Vault were built via the Portal on purpose, see the spec |
+| `adf/` | ADF linked service, dataset, and pipeline JSON (bronze ingestion) | Working, git-integrated |
+| `airflow/` | Dockerized Airflow, DAG for the full pipeline | Working; downstream tasks are placeholders, see spec section 11 |
+| `notebooks/` | Local PySpark: bronze to silver, silver to gold | Working, row counts verified at every stage |
+| `dashboards/` | Tableau Public workbook (`.twbx`) on the gold layer | Working, three views |
+| `.github/workflows/` | CI: lint (flake8) + Terraform validate | Working, green |
+| `docs/project_spec.md` | Original plan, every pivot, final scope, future work | -- |
+
+`dbt/`, `synapse-spark/`, `powerbi/`, `ml/`, and `fabric/` exist as empty placeholders left over from the original nine-service plan and aren't part of v1 -- nothing in them is tracked in git. They mark where the deferred work listed in the spec's final section would land.
 
 ## Dataset
 
-[M5 Forecasting - Accuracy](https://www.kaggle.com/competitions/m5-forecasting-accuracy) (Walmart, via Kaggle). Download `sales_train_validation.csv`, `sell_prices.csv`, `calendar.csv`, and `sample_submission.csv`, and drop them somewhere ADF's bronze pipeline can reach (a storage account container, or upload directly — see `adf/README.md`).
+[M5 Forecasting - Accuracy](https://www.kaggle.com/competitions/m5-forecasting-accuracy) (Walmart, via Kaggle): `sales_train_evaluation.csv`, `sell_prices.csv`, `calendar.csv`. Real production retail data -- heavy intermittency (most items sell zero units most days), prices that change mid-series, and five years of real calendar effects (weekly seasonality, SNAP food-assistance eligibility by state, and a sales collapse every single Christmas Day).
 
 ## Running it
 
-1. `cd infra && terraform init && terraform apply` — provisions everything (see `infra/README.md` for variables and cost notes).
-2. Import `adf/pipelines/*.json` into the provisioned Data Factory, point the linked service at your storage account, run the bronze pipeline.
-3. `cd airflow && docker compose up` — brings up the orchestration layer; trigger the `m5_pipeline` DAG.
-4. Airflow runs: Databricks silver notebook → Synapse Spark gold job → `dbt run && dbt test` → LightGBM training (MLflow-logged).
-5. Query the gold tables via Synapse serverless SQL, or open the Power BI files in `powerbi/`.
-6. Optional: follow `fabric/onelake_mirroring.md` to mirror the gold Delta tables into Fabric and build the Direct Lake report.
+1. `cd infra && terraform init && terraform apply` -- provisions the resource group (this is the piece to extend as Terraform coverage grows).
+2. Create the ADLS Gen2 storage account (hierarchical namespace enabled, three containers: bronze/silver/gold) and a Key Vault via the Portal, and store the storage key as a Key Vault secret.
+3. Import `adf/` into a Data Factory via Git integration, point the linked services at your storage account and Key Vault, upload the M5 CSVs to a `landing` container, and run `PL_Ingest_M5_Bronze`.
+4. `cd airflow && docker compose up`, then trigger the `m5_pipeline` DAG.
+5. Run `notebooks/01_bronze_to_silver.py` and then `notebooks/02_silver_to_gold.py` locally (needs Java, PySpark, and the `hadoop-azure` connector version matched to your installed Hadoop version -- see the spec for the exact versions and the errors that pinned them down).
+6. Open `dashboards/m5_sales_dashboard.twbx` in Tableau Public, or install Tableau Public fresh and connect it to the CSV that `02_silver_to_gold.py` writes locally.
 
 ## Cost
 
-Built to run inside Azure's $200/30-day free trial credit plus Microsoft Fabric's separate 60-day F64 free trial. See `docs/project_spec.md` section 5 for the full breakdown and teardown checklist.
+Built on an Azure for Students subscription with a $10 budget cap. See `docs/project_spec.md` sections 10 and 11 for the three infrastructure walls this hit and why, and the final section for a full accounting of what's built versus deferred.
 
 ## License
 
-MIT — see `LICENSE`.
+MIT -- see `LICENSE`.

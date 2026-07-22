@@ -184,3 +184,42 @@ m5-azure-forecasting/
 - Airflow orchestration is unaffected -- Fabric exposes a REST API, so the `transform_silver_databricks` and `aggregate_gold` DAG tasks get retargeted at Fabric instead of losing external triggering entirely (unlike the Databricks Community Edition alternative, which was considered and rejected specifically because it cannot be triggered externally).
 
 This is a real infrastructure constraint, not a design do-over for its own sake -- worth stating plainly in any write-up of this project rather than glossed over.
+
+## 11. Amendment (post-Stage 7): Fabric blocked too, Synapse blocked too, final v1 lands on local PySpark + Tableau
+
+The Fabric pivot from section 10 didn't survive contact with reality either. Signing up for the F64 trial capacity failed with "only for school or work account" -- Fabric requires a Microsoft Entra account tagged as work/school, and a personal Gmail-based Azure subscription doesn't qualify, even though Azure itself had happily auto-created a guest tenant for it. That's a hard account-type gate, not a quota you can request an increase on.
+
+At that point two separate cloud Spark options had failed for two unrelated reasons (Databricks: compute quota, Fabric: account type), so the transform work moved off Azure/Fabric compute entirely and ran locally: PySpark on my own machine, reading and writing directly against ADLS Gen2 over `abfss://`, authenticated with a storage key pulled from Key Vault at runtime via `DefaultAzureCredential`. Both the bronze-to-silver reshape (unpivot wide-to-long, join in calendar and prices) and the silver-to-gold aggregation ran this way, with row counts checked by hand at every step against the arithmetic they should produce (30,490 x 1,941 = 59,181,090, and so on), so a silent mistake couldn't slide through unnoticed.
+
+Serving hit a third wall. Standing up a Synapse workspace for its serverless SQL pool (chosen specifically because serverless needs no provisioned compute, so it shouldn't have been able to hit a quota problem at all) failed at deployment with `SqlServerRegionDoesNotAllowProvisioning`. Tried it in two different regions, East US 2 and North Central US -- identical error both times, which points to a subscription-wide restriction on creating new Azure SQL Database servers rather than a regional capacity issue. Every Synapse workspace provisions one of these underneath, whether or not you ever touch a dedicated SQL pool. Azure for Students subscriptions appear to block this outright, most likely as a fraud-prevention measure. Dropped Synapse from v1 entirely rather than burn more time chasing a fourth region.
+
+Power BI didn't make it either, for an unrelated reason: Power BI Desktop has no native Mac build, and running it through a Windows VM (Parallels or similar) meant paying for and setting up a second piece of software just to build one dashboard, which wasn't worth it against a live $10 budget that had already tripped its 50% alert. Tableau Public stood in instead: free, native on Mac, and it publishes to a shareable public link, which Power BI Desktop wouldn't have given for free anyway.
+
+Net effect: the gold table gets exported to a local CSV and Tableau Public reads that file directly, rather than either product querying a live Azure endpoint. For a five-year-old, static Kaggle dataset this loses nothing real -- there's no live data to keep in sync with -- but it's worth being upfront that the serving layer in this project is file-based, not a live cloud query engine, and saying so plainly here rather than letting a diagram imply otherwise.
+
+Three real infrastructure walls hit in a row on this subscription: Databricks compute quota, Fabric's account-type gate, Synapse's SQL server provisioning block. All three are documented rather than hidden, because working around a constraint you can name and explain is a better story than a build with no friction in it at all.
+
+One open item: the Databricks workspace created in section 10 should be deleted if it hasn't been already, since it now has zero role in the final architecture and standing infrastructure was the leading suspect behind the budget alert. Confirm its state in the portal before treating this project as closed out.
+
+## 12. Final v1 scope -- what's actually built, and what's next
+
+This project shipped a real, working, but intentionally smaller slice than the original nine-service plan in sections 1 through 9. That plan was the honest starting ambition; this section is the honest final accounting. Nothing below was abandoned quietly -- each cut is explained in sections 10 and 11, and each is a genuine, resumable next step rather than a dead end.
+
+Shipped in v1, all verified end to end:
+
+- Terraform: resource group and provider configuration. The remaining resources (storage account, Key Vault) were created through the Azure Portal on purpose, to actually see and understand what each resource's console looks like before automating it -- a deliberate sequencing choice for learning, not a shortcut taken to skip Terraform.
+- ADLS Gen2 with hierarchical namespace, three containers (bronze/silver/gold), Key Vault storing the storage key behind RBAC (not the older vault access policy model), with a managed identity role assignment for ADF set up correctly after an early false start.
+- Azure Data Factory: git-integrated pipeline, parameterized dataset and ForEach+Copy activity, landing to bronze, debugged and published successfully.
+- Apache Airflow: self-hosted via Docker Compose (CeleryExecutor, Redis, Postgres), a real DAG with genuine task dependencies, manually triggered and confirmed passing end to end. The downstream tasks (`transform_silver_databricks`, `aggregate_gold`, `train_model`) are currently placeholders, since the engines they were meant to call (Databricks, Fabric) didn't survive the subscription's constraints -- retargeting them at whatever compute replaces those is the natural next step, not a rewrite.
+- Local PySpark transform: bronze to silver (reshape, join calendar and prices) and silver to gold (daily aggregation by store and category, with SNAP and event flags), both reading and writing straight to ADLS Gen2, both verified against hand-checked row counts.
+- Tableau Public dashboard on the gold layer: a daily sales trend by category (showing real weekly seasonality and a sales collapse every single Christmas Day), a SNAP-effect comparison (FOODS shows the clear lift, HOBBIES doesn't move, consistent with SNAP's food-only eligibility rules), and a state-level map of total volume.
+- GitHub Actions CI: lints the PySpark and DAG code and validates the Terraform configuration, with no cloud credentials stored anywhere in CI, since `terraform validate` checks configuration syntax only and never calls the Azure API.
+
+Deferred past v1, each for a stated reason, each a real next step:
+
+- dbt. The gold aggregation currently lives as plain PySpark rather than a dbt project. The medallion layers are already in place, so layering dbt models, tests, and generated docs on top of the existing silver/gold tables is a contained addition, not a redesign.
+- Cloud Spark compute. Both Databricks and Fabric hit real, documented walls on this subscription tier (sections 10 and 11). Local PySpark covered v1; revisiting this with a paid subscription or a different compute budget is the obvious path back to a cloud engine.
+- Synapse Serverless SQL. Blocked by the SQL server provisioning restriction described above. Worth retrying on a subscription without that restriction, since serverless SQL over a lake is a genuinely useful pattern this project didn't get to demonstrate.
+- Microsoft Purview. Planned from the start (section 3), never built. Lineage and governance tooling is exactly the kind of thing that gets asked about at a senior level, so this is a good v2 addition once the pipeline it would scan is stable.
+- The actual forecasting model. AutoML baseline, LightGBM with engineered lag/rolling features, MLflow tracking, WRMSSE evaluation -- none of this is built yet. Worth stating plainly: a project titled "demand forecasting" that stops at a clean gold table hasn't forecast anything yet. It's the explicit next phase, deliberately sequenced after the data engineering pipeline rather than attempted in parallel with it.
+- Power BI. Skipped for a platform reason (no native Mac build), not a technical failure. Worth revisiting given access to a Windows machine, or exploring the Power BI Service's browser-based authoring instead.
