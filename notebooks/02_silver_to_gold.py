@@ -48,3 +48,7 @@ print("Gold row count (expect 58,230 = 10 stores x 3 cats x 1,941 days):", gold_
 gold_daily_category.write.mode("overwrite").parquet(
     f"abfss://gold@{STORAGE_ACCOUNT}.dfs.core.windows.net/daily_sales_by_store_category/"
 )
+
+gold_daily_category.toPandas().to_csv("gold_daily_sales_by_store_category.csv", index=False)
+
+spark.stop()
