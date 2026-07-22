@@ -58,9 +58,11 @@ calendar = spark.read.option("header", True).csv(f"{BASE}/calendar.csv")
 sell_prices = spark.read.option("header", True).csv(f"{BASE}/sell_prices.csv")
 
 sales_with_dates = sales_long.join(
-    calendar.select("d", "date", "wm_yr_wk", "event_name_1", "event_type_1",
-                     "snap_CA", "snap_TX", "snap_WI"),
-    on="d", how="left"
+    calendar.select(
+        "d", "date", "wm_yr_wk", "event_name_1", "event_type_1",
+        "snap_CA", "snap_TX", "snap_WI",
+    ),
+    on="d", how="left",
 )
 
 sales_enriched = sales_with_dates.join(
