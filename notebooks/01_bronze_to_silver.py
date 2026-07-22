@@ -55,4 +55,25 @@ sales_long.write.mode("overwrite").partitionBy("state_id").parquet(
     f"abfss://silver@{STORAGE_ACCOUNT}.dfs.core.windows.net/sales_long/"
 )
 
+calendar = spark.read.option("header", True).csv(f"{BASE}/calendar.csv")
+sell_prices = spark.read.option("header", True).csv(f"{BASE}/sell_prices.csv")
+
+sales_with_dates = sales_long.join(
+    calendar.select("d", "date", "wm_yr_wk", "event_name_1", "event_type_1",
+                     "snap_CA", "snap_TX", "snap_WI"),
+    on="d", how="left"
+)
+
+sales_enriched = sales_with_dates.join(
+    sell_prices,
+    on=["store_id", "item_id", "wm_yr_wk"],
+    how="left"
+)
+
+print("Enriched row count:", sales_enriched.count())  # should still be 59,181,090 — left joins don't drop rows
+
+sales_enriched.write.mode("overwrite").partitionBy("state_id").parquet(
+    f"abfss://silver@{STORAGE_ACCOUNT}.dfs.core.windows.net/sales_enriched/"
+)
+
 spark.stop()
