@@ -30,7 +30,6 @@ print("Sales row count (should be 30,490 -- one per item-store series):", sales_
 print("Column count:", len(sales_wide.columns))
 sales_wide.select(sales_wide.columns[:8]).show(3)
 
-# --- Test the melt logic on ONE store only first, before running on everything ---
 id_cols = ["id", "item_id", "dept_id", "cat_id", "store_id", "state_id"]
 day_cols = [c for c in sales_wide.columns if c.startswith("d_")]
 
